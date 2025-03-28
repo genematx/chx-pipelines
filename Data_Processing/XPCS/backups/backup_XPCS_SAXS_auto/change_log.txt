@@ -1,0 +1,7 @@
+change after 07272024:
+- after fixing outlier detection (pixels that count funky at long exposure times), addeded 'threshold' to setup parameter mask_outliers: can now be one of True, False, float; IF float: do outlier detection if exposure time > float
+
+change after 11212024:
+- fixed problem with filepath where check_roi_masknames() looks up available roi masks
+- added more robust 'fake parameters' in case fits of both g2 from multitau and g2 from 2TCF fail (fake parameters allow saving result file without modifications....) 
+
