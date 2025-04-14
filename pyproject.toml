@@ -1,15 +1,13 @@
 [project]
-authors = ["Eugene Matviychuk <ymatviych@bnl.gov>"]
+name = "chx-pipelines"
+version = "1.0.0"
+requires-python = ">=3.11,<3.12"
+
+[tool.pixi.project]
 channels = ["conda-forge"]
-description = "Add a short description here"
-name = "tests"
-platforms = ["linux-64"]
-version = "0.1.0"
+platforms = ["linux-64", "osx-64"]
 
-[tasks]
-
-[dependencies]
-python = ">=3.11,<3.12"
+[tool.pixi.dependencies]
 ipykernel = ">=6.29.5,<7"
 databroker = ">=2.0.0b4,<3"
 sparse = ">=0.15,<1"
@@ -23,8 +21,10 @@ eiger-io = ">=2.0.4,<3"
 pyolog = ">=4.5.1,<5"
 papermill = ">=2.6.0,<3"
 termcolor = ">=3.0.1,<4"
+jupytext = ">=1.17.0,<2"
 
-[pypi-dependencies]
+[tool.pixi.pypi-dependencies]
+chx-pipelines = { path = ".", editable = true }
 tiled = ">=0.1.0b20, <0.2"
 filestore = ">=1.0.7, <2"
 pyCHX = {path = "../pyCHX", editable=true}

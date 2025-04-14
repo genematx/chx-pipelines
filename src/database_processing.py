@@ -8,7 +8,7 @@ from copy import deepcopy
 from termcolor import colored
 import sys
 sys.path.insert(0, "/nsls2/data/chx/shared/CHX_Software/packages/AutoRun_functions/")
-from AutoRun_functions import *
+from autorun_functions import *
 
 
 def import_sample_database(collection='data_acquisition_collection'):
@@ -119,7 +119,7 @@ def list_database_uids(data_acquisition_collection, verbose = False):
     if verbose:
         print('datasets awaiting processing: ')
         for i in range(min(min(len(uids),5),5)):
-            md = get_meta_data(uids[i])
+            md = get_meta_data(uids[i],verbose=False)
             try:
                 meas=md['Measurement']
             except:
@@ -183,10 +183,9 @@ def run_papermill_loop(data_acquisition_collection,direction,list_length,end_of_
                 print('removed uid: %s -> NOT XPCS data'%ui)
         temp3= data_acquisition_collection.find_one({'_id':'general_list'})['analysis_failed_userX']
         s3 = set(temp3)
-        uids = [x for x in temp1 if x not in s2 and x not in s3 and x not in s4 ] 
         ########## end of temporary fix
-                
         
+        uids = [x for x in temp1 if x not in s2 and x not in s3 and x not in s4 ]               
         N = len(uids)   
         if N>=Nc: # list of uids is not empty
             print('uid list for analysis is NOT empty, found '+str(len(uids))+' uids awaiting analysis.')
@@ -196,7 +195,7 @@ def run_papermill_loop(data_acquisition_collection,direction,list_length,end_of_
                 if direction == 'down':
                     ct_=(ct_+1)*(-1)
                 for k in ct_:
-                    md = get_meta_data(uids[k])
+                    md = get_meta_data(uids[k],verbose=False)
                     try:
                         meas=md['Measurement']
                     except:
@@ -212,7 +211,7 @@ def run_papermill_loop(data_acquisition_collection,direction,list_length,end_of_
 
             else:
                 uid = uids[next_uid_]
-                md_dict=get_meta_data(uid)          
+                md_dict=get_meta_data(uid,verbose=False)          
                 try:
                     measurement=md_dict['Measurement']
                 except:
@@ -270,7 +269,7 @@ def run_papermill_loop(data_acquisition_collection,direction,list_length,end_of_
                     tx = [u for u in temp4  if u!=uid ]
                     data_acquisition_collection.update_one( {'_id':'general_list'},
                                                                {'$set':{'analysis_in_progress':  tx }   })     
-                    if 'proposal' is not in md_dict.keys():
+                    if 'proposal' not in md_dict.keys():
                         txt_dir = baseDir + '%s/%s/'%(md_dict['cycle'],md_dict['user'])
                     elif 'proposal' in md_dict.keys():
                         txt_dir = baseDir + '%s/%s/AutoRuns/'%(md_dict['cycle'],'pass-'+md_dict['proposal']['proposal_id'])
@@ -373,7 +372,7 @@ def check_auto_processing_possible(uid,_base_path_,image_range=None,return_statu
     if 'proposal' not in list(h.start.keys()):
         pp=_base_path_+'%s/AutoRuns/%s/%s'%(h.start['cycle'],h.start['user'],h.start['auto_pipeline']+'.ipynb')
     elif 'proposal' in list(h.start.keys()):
-        pp=_base_path_pass_+'%s/pass-%s/AutoRuns/%s'%(h.start['cycle'],h.start['proposal']['proposal_id'],h.start['auto_pipeline']+'.ipynb')
+        pp=_base_path_+'%s/pass-%s/AutoRuns/%s'%(h.start['cycle'],h.start['proposal']['proposal_id'],h.start['auto_pipeline']+'.ipynb') # note: _base_path_ is a variable here, usually set to either _base_path_ or _base_path_path_
     nb_exists=os.path.isfile(pp)
     
     # 4. eiger detector in detectors?
@@ -505,3 +504,273 @@ def check_auto_processing_possible_waxs(uid,_base_path_,return_status_dict=False
         return [sum_status,status_dict]
     else:
         return sum_status
+
+
+def update_heartbeat_json(heartbeat_dict,heartbeat_dict_file,verbose=False):
+    """
+    update json file with heartbeat from papermill notebook
+    tries to find existing file @heartbeat_dict_file, if it does not exist, it will create a new one
+    heartbeat_dict = {'process_id':%s_user:%s(pipeline,user) ,'info':{'direction':direction,'message':heartbeat_message,'time':heartbeat_time}}
+    02/01/2025 by LW
+    """
+    if os.path.isfile(heartbeat_dict_file): # file exists, laod existing heartbeat_dict
+            f = open(heartbeat_dict_file)
+            tmp = json.load(f);f.close()
+            current_heartbeat_dict=json.loads(tmp);del tmp
+            current_heartbeat_dict[heartbeat_dict['process_id']]=heartbeat_dict['info']
+            if verbose:
+                print('Updated %s with heartbeat from this pipeline'%heartbeat_dict_file)
+    else:
+        if verbose:
+            print('Could not find %s -> creating new json file to collect heartbeats from papermill pipelines'%heartbeat_dict_file)
+        current_heartbeat_dict={heartbeat_dict['process_id']:heartbeat_dict['info']}
+    # save back to file:
+    tmp=json.dumps(current_heartbeat_dict)
+    with open(heartbeat_dict_file, "w") as outfile:
+        json.dump(tmp, outfile); del tmp
+
+
+def check_papermill_heartbeat(filename='auto',warning_levels='auto',runtime=None,update_frequency=120,verbose=False):
+    """
+    check for heartbeats from papermill pipelines to keep track of what these are doing, if some died, etc.
+    filename: path/filename for json dict with heartbeat information'; filename='auto' assume current directory (typically ..../AutoRuns/cycle/) and standard filename heartbeat.json
+    warning_levels: list with 3 entries, like [10,30,60] -> last heartbeat <=10min ago: green, <=30min ago: yellow, <=60min ago: red, >60min: ignored (assumed dead a long time ago)
+    runtime: [min]: how long to check for updates OR None -> look until kernel gets interrupted
+    update frequency: [s] how often to check for updates
+    02/01/2025 by LW
+    """
+    
+    assert len(warning_levels)==3 or warning_levels == 'auto', 'ERROR: length of warning levels must be 3, e.g. warning_levels = [5,15,60] or warning_levels="auto"'
+    if filename=='auto':
+        heartbeat_dict_file=os.getcwd()+'/heartbeat.json'
+    else:
+        heartbeat_dict_file=filename
+
+    if runtime is None:
+        stop_time=np.inf
+    else:
+        stop_time = time.time()+60*runtime
+        
+    while time.time() < stop_time:
+        if verbose:
+            print('getting data from : %s'%heartbeat_dict_file)
+        f = open(heartbeat_dict_file)
+        tmp = json.load(f);f.close()
+        current_heartbeat_dict_dict=json.loads(tmp);del tmp
+        if warning_levels=='auto':
+            warning_levels = [10,30,60]
+    
+        ignore_count = 0
+        print('HEARTBEATS FROM PAPERMILL PROCESSES:')
+        for i in current_heartbeat_dict_dict.keys():
+            pipeline = i.split('_user:')[0]
+            user=i.split('_user:')[1]
+            time_stamp=int(np.round((time.time()-current_heartbeat_dict_dict[i]['time'])/60))
+    
+            if time_stamp <= warning_levels[0]:
+                pc='green'
+            elif time_stamp > warning_levels[0] and time_stamp <= warning_levels[1]:
+                pc='yellow'
+            elif time_stamp > warning_levels[1] and time_stamp <= warning_levels[2]:
+                pc='red'
+                
+            
+            if time_stamp<=warning_levels[-1]:
+                print(colored('%s  run by: %s  direction: %s -> %s  %s min ago'%(pipeline,user,current_heartbeat_dict_dict[i]['direction'],current_heartbeat_dict_dict[i]['message'],time_stamp),pc))
+            else:
+                ignore_count+=1
+        if ignore_count>0:
+            print('\n not showing %s processe(s) with most recent heartbeat >%s min ago'%(ignore_count,warning_levels[-1]))
+        print('\n')
+        for s in tqdm (range(100),desc="waiting for upates from papermill pipelines…",  ascii=False, ncols=200,file=sys.stdout, colour='GREEN'):
+            time.sleep(update_frequency/100)
+        clear_output()
+    print('STOPPED LOOKING FOR UPDATES: runtime of %smin exceeded!'%runtime)
+
+
+def run_papermill_loop_test(data_acquisition_collection,direction,list_length,end_of_processing_uid,empty_list_timeout,txt_filename,baseDir,alternate_directory,session=None,machine=None,track_progress=True,verbose=False,heartbeat=True):
+    """
+   run_papermill_loop(data_acquisition_collection,direction,list_length,end_of_processing_uid,empty_list_timeout,txt_filename,baseDir,alternate_directory,machine=None,track_progress=True, verbose=False)
+    function to run data processing in a loop via papermill
+    """
+    if direction == 'up' and list_length=='auto':
+        Nc=1
+    elif direction == 'down' and list_length=='auto':
+        Nc=2
+    elif type(list_length)==int:
+        Nc=list_length
+    if direction == 'up':
+        next_uid_=0
+    elif direction == 'down':
+        next_uid_=-1
+
+    time_count=0
+    run_condition = True; write_header = True
+
+    if track_progress:
+        a=os.getcwd()
+        processing_overview_dict_file=a+'/processing_overview_dict.json'
+    if heartbeat:
+        heartbeat_dict_file=os.getcwd()+'/heartbeat.json'
+        import getpass
+        heartbeat_time = time.time()
+        heartbeat_process_id = '%s_user:%s'%(session,getpass.getuser())
+        heartbeat_dict={'process_id':heartbeat_process_id,'info':{}}
+        
+    
+    while run_condition:
+        clear_output()
+        temp1 = data_acquisition_collection.find_one({'_id':'general_list'})['uid_list']
+        temp2= data_acquisition_collection.find_one({'_id':'general_list'})['analysis_completed']
+        temp3= data_acquisition_collection.find_one({'_id':'general_list'})['analysis_failed_userX']
+        temp4 = data_acquisition_collection.find_one({'_id':'general_list'})['analysis_in_progress']
+        s2 = set(temp2)
+        s3 = set(temp3)
+        s4 = set( temp4 )
+
+        ########################################
+        ####### Get uids to be processed #######    
+        #uids = [x for x in temp1 if x not in s2 and x not in s3] 
+        uids = [x for x in temp1 if x not in s2 and x not in s3 and x not in s4 ] 
+        ######################################
+        # temporary: try to remove non-XPCS data that somehow got added to the database:
+        for ui in uids:
+            g=db[ui]
+            try:
+                if not g.start['XPCS_data']:
+                    temp3 = data_acquisition_collection.find_one({'_id':'general_list'})['analysis_failed_userX']
+                    temp3.append(ui)
+                    data_acquisition_collection.update_one({'_id':'general_list'},{'$set':{ 'analysis_failed_userX': temp3}})
+                    print('removed uid: %s -> NOT XPCS data'%ui)
+            except: # that md entry is not even there, which should be the case for Pilatus data
+                temp3= data_acquisition_collection.find_one({'_id':'general_list'})['analysis_failed_userX']
+                temp3.append(ui)
+                data_acquisition_collection.update_one({'_id':'general_list'},{'$set':{ 'analysis_failed_userX': temp3}})
+                print('removed uid: %s -> NOT XPCS data'%ui)
+        temp3= data_acquisition_collection.find_one({'_id':'general_list'})['analysis_failed_userX']
+        s3 = set(temp3)
+        ########## end of temporary fix
+        
+        uids = [x for x in temp1 if x not in s2 and x not in s3 and x not in s4 ]               
+        N = len(uids)   
+        if N>=Nc: # list of uids is not empty
+            print('uid list for analysis is NOT empty, found '+str(len(uids))+' uids awaiting analysis.')
+            if verbose:
+                print('\nNext datasets to be processed by this papermill loop:')
+                ct_=np.arange(min(min(len(uids),5),5))
+                if direction == 'down':
+                    ct_=(ct_+1)*(-1)
+                for k in ct_:
+                    md = get_meta_data(uids[k],verbose=False)
+                    try:
+                        meas=md['Measurement']
+                    except:
+                        meas = ''
+                    print('[%s] scan_id: %s / uid: %s    %s'%(k,md['scan_id'],uids[k],meas))
+                if len(uids)>5:
+                    print('...')
+                
+            time_count=0
+            if end_of_processing_uid != 'none' and uids[next_uid] == end_of_processing_uid: #looking for a stop key, next uid up IS the stop key
+                run_condition = False
+                print('Stop Key for analysis detected!')
+
+            else:
+                uid = uids[next_uid_]
+                md_dict=get_meta_data(uid,verbose=False)          
+                try:
+                    measurement=md_dict['Measurement']
+                except:
+                    measurement=''
+                print('Doing data analysis for scan_id: %s  uid: %s\n%s'%(md_dict['scan_id'],uid,measurement))
+                
+                if heartbeat:
+                    heartbeat_time = time.time()
+                    heartbeat_message = 'analysis for scan_id: %s  uid: %s'%(md_dict['scan_id'],uid)
+                    heartbeat_dict['info']={'direction':direction,'message':heartbeat_message,'time':heartbeat_time}
+                    try:
+                        update_heartbeat_json(heartbeat_dict,heartbeat_dict_file,verbose=False)
+                        print('process_id: %s  direction: %s  doing:  %s    time: %s'%(heartbeat_process_id,direction,heartbeat_message,heartbeat_time))
+                    except:
+                        pass
+                
+                # commented below for testing!
+                #time.sleep(30) #'faking' data processing
+                if uid not in s4:
+                    t0 = time.time()
+                    try:                                        
+                        temp4.append( uid )
+                        data_acquisition_collection.update_one({'_id':'general_list'},
+                                                             {'$set':{ 'analysis_in_progress': temp4}}) 
+                        
+                        if track_progress: # progress tracking
+                            progress_dict_file = get_progress_dict_filename(uid,md['cycle'],md['user'],baseDir)
+                            process_id = get_process_id(uid,md['cycle'],md['user'],baseDir,verbose=False) # -> need to pass this to notebook
+                            manage_processing_overview(processing_overview_dict_file,process_id,action='start_processing',
+                                                       progress_dict_file=progress_dict_file,machine=machine,verbose=True)
+                            insert_dict={'process_id':process_id}
+                        else: insert_dict={}
+                        
+                        #### papermill call ####################
+                        chx_analysis_data( uid , baseDir, alternate_directory, insert_dict=insert_dict)  ## MODIFIED FOR RADIASOFT                 
+                        #########################################
+                        # update list of uids for processing:
+                        temp2= data_acquisition_collection.find_one({'_id':'general_list'})['analysis_completed']    
+                        temp2.append(uid)
+                        data_acquisition_collection.update_one({'_id':'general_list'},
+                                                        {'$set':{ 'analysis_completed': temp2}})  
+                        status='success'
+                        if track_progress: # progress tracking
+                                manage_processing_overview(processing_overview_dict_file,process_id,action='finished_processing',machine=None,verbose=True)
+
+                    except:
+                        temp3= data_acquisition_collection.find_one({'_id':'general_list'})['analysis_failed_userX']
+                        temp3.append(uids[0])
+                        data_acquisition_collection.update_one({'_id':'general_list'},{'$set':{ 'analysis_failed_userX': temp3}})
+                        status='failed'
+                        if track_progress:
+                            manage_processing_overview(processing_overview_dict_file,process_id,action='failed_processing',machine=None,verbose=True)
+                        
+                    #md_dict=get_meta_data(uid)
+                    ts = (time.time() - t0)/60 #in unit of min
+                    if write_header:
+                        txt_header = 'fuid, sample, notes, comp_time, comp_status';write_header=False
+                    else: txt_header = ''
+                    
+                    #ss  = db[uid]['start'] should be able to do without this, if we have md_dict...
+                    sample = md_dict['sample']
+                    note= md_dict['Measurement']
+                    txt_content =   [ uid, sample, note, ts, status  ]  
+                    #txt_content.append(x)
+
+                    ##remove this uid from  uid in analysis_in_progress
+                    temp4 = data_acquisition_collection.find_one({'_id':'general_list'})['analysis_in_progress']
+                    tx = [u for u in temp4  if u!=uid ]
+                    data_acquisition_collection.update_one( {'_id':'general_list'},
+                                                               {'$set':{'analysis_in_progress':  tx }   })     
+                    if 'proposal' not in md_dict.keys():
+                        txt_dir = baseDir + '%s/%s/'%(md_dict['cycle'],md_dict['user'])
+                    elif 'proposal' in md_dict.keys():
+                        txt_dir = baseDir + '%s/%s/AutoRuns/'%(md_dict['cycle'],'pass-'+md_dict['proposal']['proposal_id'])
+                    append_txtfile( txt_dir + txt_filename, data=txt_content, fmt='%s',
+                            delimiter=',', header= txt_header) 
+
+        else:
+            if time_count > empty_list_timeout:
+                print('uid list for analysis was empty for > '+str(empty_list_timeout)+'s -> stop looking for new uids')
+                run_condition = False 
+            else:
+                time_count=time_count+5
+                print('list of uids for analysis is emtpy...going to look again in 5s.')
+
+                if heartbeat:
+                    if time.time()-heartbeat_time >60: # don't need an update every 5 sec...
+                        heartbeat_time = time.time()
+                        heartbeat_message = 'waiting for new uid'
+                        heartbeat_dict['info']={'direction':direction,'message':heartbeat_message,'time':heartbeat_time}
+                        try:
+                            update_heartbeat_json(heartbeat_dict,heartbeat_dict_file,verbose=False)
+                        except:
+                            pass
+                        print('process_id: %s  direction: %s  doing:  %s    time: %s'%(heartbeat_process_id,direction,heartbeat_message,heartbeat_time))                
+                time.sleep(5)
